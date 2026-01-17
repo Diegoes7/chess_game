@@ -91,19 +91,45 @@ class Board:
                     return r, c
         return None
 
+    def is_square_attacked(self, row, col, attacker_color):
+        """ Check if a square (row, col) is attacked by a piece of attacker_color """
+        for r, row_list in enumerate(self.board):
+            for c, piece in enumerate(row_list):
+                if piece and piece.color == attacker_color:
+                    if piece.is_valid_move(self, r, c, row, col):
+                        return True
+        return False
+
     def is_in_check(self, color):
         king_pos = self.find_king(color)
         if not king_pos:
             return False
         
-        king_row, king_col = king_pos
         opponent_color = "black" if color == "white" else "white"
+        return self.is_square_attacked(king_pos[0], king_pos[1], opponent_color)
 
-        for r, row in enumerate(self.board):
-            for c, piece in enumerate(row):
-                if piece and piece.color == opponent_color:
-                    if piece.is_valid_move(self, r, c, king_row, king_col):
-                        return True
+    def _is_valid_castle(self, start_row, start_col, end_row, end_col):
+        if self.is_in_check(self.turn):
+            return False
+
+        # Kingside castle
+        if end_col == 6:
+            rook = self.get_piece(start_row, 7)
+            if rook and not rook.has_moved and not self.get_piece(start_row, 5) and not self.get_piece(start_row, 6):
+                opponent_color = 'black' if self.turn == 'white' else 'white'
+                if not self.is_square_attacked(start_row, 4, opponent_color) and \
+                   not self.is_square_attacked(start_row, 5, opponent_color) and \
+                   not self.is_square_attacked(start_row, 6, opponent_color):
+                    return True
+        # Queenside castle
+        elif end_col == 2:
+            rook = self.get_piece(start_row, 0)
+            if rook and not rook.has_moved and not self.get_piece(start_row, 1) and not self.get_piece(start_row, 2) and not self.get_piece(start_row, 3):
+                opponent_color = 'black' if self.turn == 'white' else 'white'
+                if not self.is_square_attacked(start_row, 4, opponent_color) and \
+                   not self.is_square_attacked(start_row, 3, opponent_color) and \
+                   not self.is_square_attacked(start_row, 2, opponent_color):
+                    return True
         return False
 
     def get_all_possible_moves(self, color):
@@ -141,52 +167,62 @@ class Board:
         if not (piece and piece.color == self.turn and piece.is_valid_move(self, start_row, start_col, end_row, end_col)):
             return False
 
-        # Temporarily make the move to check for checks
-        original_piece = self.board[end_row][end_col]
-        self.board[end_row][end_col] = piece
-        self.board[start_row][start_col] = None
-        
-        # Check if move puts own king in check
-        if self.is_in_check(self.turn):
-            # revert the temporary move
-            self.board[start_row][start_col] = piece
-            self.board[end_row][end_col] = original_piece
-            return False
+        is_castling = isinstance(piece, King) and abs(start_col - end_col) == 2
 
-        # The move is valid, so now we can save state and commit the move.
-        # revert the temporary move to get the original captured piece
-        self.board[start_row][start_col] = piece
-        self.board[end_row][end_col] = original_piece
-
-        # Save the current state for the undo feature
+        # Save state before making the move
         current_state = {
             'board_layout': copy.deepcopy(self.board),
             'current_turn': self.turn,
             'white_captured': list(self.white_captured),
             'black_captured': list(self.black_captured),
         }
-        self.history.append(current_state)
 
-        # Check for capture
-        captured_piece = self.get_piece(end_row, end_col)
-        if captured_piece:
-            if captured_piece.color == 'white':
-                self.black_captured.append(captured_piece)
-            else:
-                self.white_captured.append(captured_piece)
-
-        self.board[end_row][end_col] = piece
+        # Make the move on a temporary board to check for checks
+        original_piece_at_dest = self.board[end_row][end_col]
         self.board[start_row][start_col] = None
-        piece.has_moved = True
+        self.board[end_row][end_col] = piece
+
+        if is_castling:
+            if end_col == 6:  # Kingside
+                rook = self.get_piece(start_row, 7)
+                self.board[start_row][7] = None
+                self.board[start_row][5] = rook
+            elif end_col == 2:  # Queenside
+                rook = self.get_piece(start_row, 0)
+                self.board[start_row][0] = None
+                self.board[start_row][3] = rook
+
+        if self.is_in_check(self.turn):
+            # Revert changes on the board if the move is illegal
+            self.board = current_state['board_layout']
+            return False
+
+        # If the move is legal, commit it and save history
+        self.history.append(current_state)
         
+        # The move has already been made on self.board for the check, so we just need to update piece state
+        piece.has_moved = True
+        if is_castling:
+            if end_col == 6:  # Kingside
+                self.get_piece(start_row, 5).has_moved = True
+            elif end_col == 2:  # Queenside
+                self.get_piece(start_row, 3).has_moved = True
+
+        # Check for capture (castling is not a capture)
+        if not is_castling and original_piece_at_dest:
+            if original_piece_at_dest.color == 'white':
+                self.black_captured.append(original_piece_at_dest)
+            else:
+                self.white_captured.append(original_piece_at_dest)
+
         # Log the move
         move_string = f"{start_pos}{end_pos}"
         if self.turn == "white":
             self.move_log.append([move_string])
-        else: # Black's move
+        else:  # Black's move
             if self.move_log and len(self.move_log[-1]) == 1:
                 self.move_log[-1].append(move_string)
-            else: # Should not happen, but as a fallback
+            else:  # Should not happen, but as a fallback
                 self.move_log.append(['...', move_string])
 
         piece.has_moved = True
@@ -345,11 +381,15 @@ class King(Piece):
         row_diff = abs(start_row - end_row)
         col_diff = abs(start_col - end_col)
 
-        if row_diff > 1 or col_diff > 1:
-            return False
+        # Standard king move
+        if row_diff <= 1 and col_diff <= 1:
+            target_piece = board.get_piece(end_row, end_col)
+            if target_piece and target_piece.color == self.color:
+                return False
+            return True
 
-        target_piece = board.get_piece(end_row, end_col)
-        if target_piece and target_piece.color == self.color:
-            return False
-        
-        return True
+        # Castling
+        if row_diff == 0 and col_diff == 2 and not self.has_moved:
+            return board._is_valid_castle(start_row, start_col, end_row, end_col)
+
+        return False
