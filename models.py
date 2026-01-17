@@ -113,11 +113,18 @@ class Board:
                 if piece and piece.color == color:
                     for r_end in range(8):
                         for c_end in range(8):
-                            board_copy = copy.deepcopy(self)
-                            start_pos_alg = board_copy._coords_to_algebraic(r_start, c_start)
-                            end_pos_alg = board_copy._coords_to_algebraic(r_end, c_end)
-                            if board_copy.move_piece(start_pos_alg, end_pos_alg):
-                                moves.append((start_pos_alg, end_pos_alg))
+                            if piece.is_valid_move(self, r_start, c_start, r_end, c_end):
+                                # Simulate the move to check if it leaves the king in check
+                                original_destination_piece = self.board[r_end][c_end]
+                                self.board[r_end][c_end] = piece
+                                self.board[r_start][c_start] = None
+                                
+                                if not self.is_in_check(color):
+                                    moves.append((self._coords_to_algebraic(r_start, c_start), self._coords_to_algebraic(r_end, c_end)))
+                                
+                                # Revert the board to its original state
+                                self.board[r_start][c_start] = piece
+                                self.board[r_end][c_end] = original_destination_piece
         return moves
     
     def is_checkmate(self, color):
@@ -131,50 +138,59 @@ class Board:
         end_row, end_col = self._algebraic_to_coords(end_pos)
 
         piece = self.get_piece(start_row, start_col)
-        if piece and piece.color == self.turn and piece.is_valid_move(self, start_row, start_col, end_row, end_col):
-            # Save the current state for the undo feature
-            current_state = {
-                'board_layout': copy.deepcopy(self.board),
-                'current_turn': self.turn,
-                'white_captured': list(self.white_captured),
-                'black_captured': list(self.black_captured),
-            }
-            self.history.append(current_state)
+        if not (piece and piece.color == self.turn and piece.is_valid_move(self, start_row, start_col, end_row, end_col)):
+            return False
 
-            # Check if move puts own king in check
-            board_copy = copy.deepcopy(self)
-            board_copy.board[end_row][end_col] = board_copy.board[start_row][start_col]
-            board_copy.board[start_row][start_col] = None
-            if board_copy.is_in_check(self.turn):
-                # If the move is invalid, remove the saved state
-                self.history.pop()
-                return False
+        # Temporarily make the move to check for checks
+        original_piece = self.board[end_row][end_col]
+        self.board[end_row][end_col] = piece
+        self.board[start_row][start_col] = None
+        
+        # Check if move puts own king in check
+        if self.is_in_check(self.turn):
+            # revert the temporary move
+            self.board[start_row][start_col] = piece
+            self.board[end_row][end_col] = original_piece
+            return False
 
-            # Check for capture
-            captured_piece = self.get_piece(end_row, end_col)
-            if captured_piece:
-                if captured_piece.color == 'white':
-                    self.black_captured.append(captured_piece)
-                else:
-                    self.white_captured.append(captured_piece)
+        # The move is valid, so now we can save state and commit the move.
+        # revert the temporary move to get the original captured piece
+        self.board[start_row][start_col] = piece
+        self.board[end_row][end_col] = original_piece
 
-            self.board[end_row][end_col] = piece
-            self.board[start_row][start_col] = None
-            piece.has_moved = True
-            
-            # Log the move
-            move_string = f"{start_pos}{end_pos}"
-            if self.turn == "white":
-                self.move_log.append([move_string])
-            else: # Black's move
-                if self.move_log and len(self.move_log[-1]) == 1:
-                    self.move_log[-1].append(move_string)
-                else: # Should not happen, but as a fallback
-                    self.move_log.append(['...', move_string])
+        # Save the current state for the undo feature
+        current_state = {
+            'board_layout': copy.deepcopy(self.board),
+            'current_turn': self.turn,
+            'white_captured': list(self.white_captured),
+            'black_captured': list(self.black_captured),
+        }
+        self.history.append(current_state)
 
-            piece.has_moved = True
-            return True
-        return False
+        # Check for capture
+        captured_piece = self.get_piece(end_row, end_col)
+        if captured_piece:
+            if captured_piece.color == 'white':
+                self.black_captured.append(captured_piece)
+            else:
+                self.white_captured.append(captured_piece)
+
+        self.board[end_row][end_col] = piece
+        self.board[start_row][start_col] = None
+        piece.has_moved = True
+        
+        # Log the move
+        move_string = f"{start_pos}{end_pos}"
+        if self.turn == "white":
+            self.move_log.append([move_string])
+        else: # Black's move
+            if self.move_log and len(self.move_log[-1]) == 1:
+                self.move_log[-1].append(move_string)
+            else: # Should not happen, but as a fallback
+                self.move_log.append(['...', move_string])
+
+        piece.has_moved = True
+        return True
         
 class Piece:
     def __init__(self, color):
@@ -334,13 +350,6 @@ class King(Piece):
 
         target_piece = board.get_piece(end_row, end_col)
         if target_piece and target_piece.color == self.color:
-            return False
-            
-        # Check if the move puts the king in check
-        board_copy = copy.deepcopy(board)
-        board_copy.board[end_row][end_col] = board_copy.board[start_row][start_col]
-        board_copy.board[start_row][start_col] = None
-        if board_copy.is_in_check(self.color):
             return False
         
         return True
